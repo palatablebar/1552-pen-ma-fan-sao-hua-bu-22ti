@@ -160,6 +160,9 @@ function redraw(data) {
     ledger = data;
     if (focus === 'record') focus = 6;
     byId('stamp').textContent = data.run_id;
+    const badge = byId('model-badge');
+    badge.textContent = `本班模型：${data.model}`;
+    badge.title = data.model_reason || '';
     byId('capacity').value = data.capacity;
     byId('mode').value = data.mode;
     byId('kpis').replaceChildren(...data.metrics.map(item => {
@@ -202,6 +205,13 @@ nav.forEach((control,i) => control.addEventListener('click',() => {
 }));
 byId('filter').addEventListener('input',showQueue);
 byId('status-filter').addEventListener('change',showQueue);
+byId('model-badge').addEventListener('click',() => {
+    if (!ledger) return;
+    focus = 3;
+    showDetail();
+    byId('detail').scrollIntoView({block:'nearest'});
+    byId('detail-title').focus({preventScroll:true});
+});
 byId('scenario').addEventListener('submit',async (event) => {
     event.preventDefault();
     const submit = byId('apply');

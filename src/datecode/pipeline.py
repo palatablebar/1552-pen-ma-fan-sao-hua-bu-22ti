@@ -6,6 +6,7 @@ from .coder_lot_print import service as intake_service
 from .ink_change_audit import service as cohort_service
 from .print_quality_terms import service as feature_service
 from .defect_stumps import service as model_service
+from .defect_stumps import selection as selection_service
 from .rescan_quality import service as calibration_service
 from .film_stock_mix import service as monitor_service
 from .camera_backlog import service as dispatch_service
@@ -59,6 +60,8 @@ def rows_for(plan, scored, vectors):
         if len(point.contributions) == len(factor_names):
             reasons = sorted(zip(factor_names, point.contributions, strict=True), key=lambda val: (-abs(val[1]), val[0]))
             driver = ' · '.join(f'{key} {amount:+.2f}' for key, amount in reasons[:2])
+        elif len(point.contributions) == 1:
+            driver = f'反光等级均值 {point.contributions[0]:+.2f}'
         else:
             driver = ' · '.join(f'{amount:+.2f}' for amount in point.contributions)
         interval = ('–' if job.lower is None else f'{job.lower:.2f}–{job.upper:.2f}')
@@ -86,16 +89,16 @@ def execute(documents, capacity=12, mode='balanced', *, as_of=96):
         raise ValueError('截止日须为第 91 日至第 3650 日之间的整数')
     if not isinstance(documents, (list, tuple)) or not 1 <= len(documents) <= 2500:
         raise ValueError('单据批次须包含 1 到 2500 条记录')
-    intake = intake_service.load_samples(documents, as_of)
     window_rule = replace(window_contract.WindowRule.standard(allow_censor=False), as_of=as_of)
+    intake = intake_service.load_samples(documents, as_of, lambda record: cohort_service.assign_fold(record, window_rule)[0] is not None)
     windows = cohort_service.build_windows(intake.entries, window_rule)
     cohort_service.model_inputs(windows)
     state = feature_service.fit_features(windows.train)
     features = feature_service.transform_windows(windows, state)
-    kernel = model_service.fit_model(features.train, state.fingerprint)
-    scored = model_service.predict(kernel, features.live, state.fingerprint)
-    retrospective = model_service.predict(kernel, features.replay, state.fingerprint)
-    calibration = model_service.predict(kernel, features.calibration, state.fingerprint)
+    kernel = selection_service.select_model(features.train, features.replay, features.live, state.fingerprint)
+    scored = kernel.predict(features.live)
+    retrospective = kernel.predict(features.replay)
+    calibration = kernel.predict(features.calibration)
     fitted_calibration = calibration_service.prepare_verification(calibration)
     evaluated = calibration_service.validate_predictions(retrospective, fitted_calibration)
     performance = calibration_service.performance(evaluated)
@@ -104,7 +107,7 @@ def execute(documents, capacity=12, mode='balanced', *, as_of=96):
     drift = monitor_service.scan_current(baseline, features.live, state.fingerprint)
     coverage = monitor_service.coverage_by_group(features.calibration, features.live)
     allocation = dispatch_service.plan_jobs(checked_live, drift.domain, capacity, mode)
-    closed = audit_service.close_batch(documents, intake, windows, allocation, state.fingerprint, kernel.name, mode)
+    closed = audit_service.close_batch(documents, intake, windows, allocation, state.fingerprint, kernel.chosen, mode)
     states = dict(closed.totals.states)
     overview = [
         {'label': '当班包装工位批', 'value': len(allocation.jobs)},
@@ -121,13 +124,13 @@ def execute(documents, capacity=12, mode='balanced', *, as_of=96):
     operating_shift = monitor_service.shop_floor_shift(features.train, features.live)
     field_evidence = audit_service.sign_field_evidence(row_list, allocation)
     features_glance = feature_service.feature_evidence(state) + feature_service.measure_review(features)
-    weight_rows = [{'量测': key, '取值': value} for key, value in kernel.evidence]
+    weight_rows = [{'量测': key, '取值': value} for key, value in kernel.weights()]
     ignored = [issue.evidence() for issue in intake.issues]
     details = [
         stage_at(0, f'接收 {intake.source_rows} 条，采用 {len(intake.entries)} 条', intake_service.preliminary_evidence(intake), ignored),
         stage_at(1, f'拟合 {len(windows.train)} 条，校准 {len(windows.calibration)} 条，回放 {len(windows.replay)} 条', cohort_service.window_evidence(windows) + cohort_service.readiness_evidence(windows, as_of)),
         stage_at(2, '特征转换版本 ' + state.fingerprint, features_glance),
-        stage_at(3, kernel.name, weight_rows + model_service.inspection_rows(kernel, features) + comparison_rows(scored)),
+        stage_at(3, f'{kernel.chosen} · {kernel.reason}', selection_service.deployment_evidence(kernel) + selection_service.selection_evidence(kernel) + weight_rows + model_service.inspection_rows(kernel.kernel, features) + comparison_rows(scored)),
         stage_at(4, f'{fitted_calibration.method} · {performance.status} · {performance.count} 条回放实绩', calibration_service.calibration_evidence(performance) + [overtime] + sector),
         stage_at(5, f'{drift.status} · {len(drift.domain)} 张单据需外推判读', monitor_service.shift_evidence(drift, coverage) + operating_shift),
         stage_at(6, f'本班占用 {allocation.capacity-allocation.balance} / {allocation.capacity} 个工位单位', dispatch_service.action_evidence(allocation) + dispatch_service.operating_group(checked_live, allocation)),
@@ -138,7 +141,7 @@ def execute(documents, capacity=12, mode='balanced', *, as_of=96):
     points = [{'label': row['key'], 'value': row['estimate'], 'state': row['state'], 'zone': row['zone'],
                'upper': row['interval'], 'cost': row['cost']} for row in sorted(row_list, key=lambda row: row['key'])]
     def estimate(vector):
-        return calibration_service.check_point(model_service.predict_one(kernel, vector), fitted_calibration).estimate
+        return calibration_service.check_point(kernel.annotate(vector), fitted_calibration).estimate
 
     # Compare interventions against frozen features, model and calibration;
     # scenario estimates never overwrite the base ticket or its decision.
@@ -150,7 +153,7 @@ def execute(documents, capacity=12, mode='balanced', *, as_of=96):
     details[7]['records'].extend(audit_service.intervention_summary(row_list))
     overview_report = {'capacity' : capacity, 'mode': mode, 'as_of': as_of, 'sample_hash': closed.batch_hash,
               'policy_hash': closed.policy_hash, 'feature_stamp': state.fingerprint,
-              'model': kernel.name, 'run_id': closed.stamp, 'object_name': DISPLAY['object_name'],
+              'model': kernel.chosen, 'model_reason': kernel.reason, 'run_id': closed.stamp, 'object_name': DISPLAY['object_name'],
               'unit': DISPLAY['unit'], 'sections': details, 'flow_counts': list(states.items()),
               'measures': {'speed': ('传送带频率', 'm/min'),
  'head_gap': ('喷头间距', 'mm'),

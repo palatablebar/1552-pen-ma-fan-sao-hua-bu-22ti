@@ -12,10 +12,11 @@ AI/ML · 传统ML · 中型
 | M2 | 换墨记录 | 截止日和成熟标签 | `src/datecode/ink_change_audit/service.py` | `tests/test_ink_change_audit.py` |
 | M3 | 字符质量 | 原始数据到特征 | `src/datecode/print_quality_terms/service.py` | `tests/test_print_quality_terms.py` |
 | M4 | 缺陷树桩 | 训练及可重复推断 | `src/datecode/defect_stumps/service.py` | `tests/test_defect_stumps.py` |
-| M5 | 返扫核验 | 回放误差及可信区间 | `src/datecode/rescan_quality/service.py` | `tests/test_rescan_quality.py` |
-| M6 | 批膜差异 | 差异定位和外推审查 | `src/datecode/film_stock_mix/service.py` | `tests/test_film_stock_mix.py` |
-| M7 | 相机积压 | 硬规则与额度分配 | `src/datecode/camera_backlog/service.py` | `tests/test_camera_backlog.py` |
-| M8 | 验码单 | 单据及额度证据 | `src/datecode/coder_verification/service.py` | `tests/test_coder_verification.py` |
+| M5 | 模型换用 | 树桩与反光均值同一成熟回放比较、分区漏报守门 | `src/datecode/defect_stumps/selection.py` | `tests/test_model_selection.py` |
+| M6 | 返扫核验 | 回放误差及可信区间 | `src/datecode/rescan_quality/service.py` | `tests/test_rescan_quality.py` |
+| M7 | 批膜差异 | 差异定位和外推审查 | `src/datecode/film_stock_mix/service.py` | `tests/test_film_stock_mix.py` |
+| M8 | 相机积压 | 硬规则与额度分配 | `src/datecode/camera_backlog/service.py` | `tests/test_camera_backlog.py` |
+| M9 | 验码单 | 单据及额度证据 | `src/datecode/coder_verification/service.py` | `tests/test_coder_verification.py` |
 
 ## 深度登记
 
@@ -30,3 +31,6 @@ AI/ML · 传统ML · 中型
 | TRAP-44 | 校准样本不足 | 分派前转人工判读并保留原因 | `src/datecode/rescan_quality/service.py` | `tests/test_rescan_quality.py::test_empty_calibration_requires_review` |
 | TRAP-53 | 单条推断与混批 | 复用冻结参数，各条估计完全一致 | `src/datecode/defect_stumps/service.py` | `tests/test_defect_stumps.py::test_input_batch_invariance` |
 | TRAP-54 | 特征版本与模型不配对 | 拒绝继续推断并要求重拟合 | `src/datecode/defect_stumps/service.py` | `tests/test_defect_stumps.py::test_mismatched_model_input_version_fails` |
+| TRAP-61 | 整体误差更低但分区漏报增加 | 整体误差只利于排额度，分区漏报增加则不换用 | `src/datecode/defect_stumps/selection.py` | `tests/test_model_selection.py::test_zone_miss_regression_keeps_mean_despite_lower_error` |
+| TRAP-62 | 当班分区缺成熟越线实绩 | 漏报无法验证，整班沿用反光均值 | `src/datecode/defect_stumps/selection.py` | `tests/test_model_selection.py::test_missing_mature_support_for_live_zone_keeps_mean` |
+| TRAP-63 | 晚到版次替换关窗前有效单 | 结果未在窗口内成熟则不挤掉旧版 | `src/datecode/coder_lot_print/service.py` | `tests/test_model_selection.py::test_late_revision_cannot_displace_preclose_valid_ticket` |

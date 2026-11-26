@@ -16,3 +16,7 @@ docker compose exec -T app python -m datecode.entry evaluate --input sample_data
 ```
 
 在网页筛选单号、作业区或原因，点击结果中的单号查看完整字段与处置证据。下载 JSON 可检视结果、对照原始资料摘要和模型特征版本。
+
+## 当班模型换用核对
+
+页头模型标记显示本班实际用于派单的模型（树桩或反光均值），点击跳到「缺陷树桩」环节。该环节逐条列出换用依据：两候选在同一成熟回放单上的整体绝对误差、各当班分区漏报数，以及最终判定。`overview` 的 `model` 字段为选用模型，`model_reason` 为换用依据；`sections[3].summary` 同样记录。

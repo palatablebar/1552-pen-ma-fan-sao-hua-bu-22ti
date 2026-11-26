@@ -10,40 +10,41 @@ from .forms import check_native_history
 
 @dataclass(slots=True)
 class RevisionJournal:
-    current: tuple[int, DatecodeRecord]
-    obsolete: list[int] = item_field(default_factory=list)
-    peers: list[int] = item_field(default_factory=list)
-    disputed: bool = False
+    entries: list[tuple[int, DatecodeRecord]] = item_field(default_factory=list)
 
     def post(self, position, record):
-        original_position, original = self.current
-        revision = record.revision
-        if revision < original.revision:
-            self.obsolete.append(position)
-            return
-        if revision > original.revision:
-            self.obsolete.append(original_position)
-            self.obsolete.extend(self.peers)
-            self.current = position, record
-            self.peers.clear()
-            self.disputed = False
-            return
-        if record.signature() != original.signature():
-            self.disputed = True
-        if record.received < original.received:
-            self.peers.append(original_position)
-            self.current = position, record
-        else:
-            self.peers.append(position)
+        self.entries.append((position, record))
 
-    def reconcile(self, issues):
-        line, retained = self.current
-        if self.disputed:
-            disputed = self.obsolete + self.peers + [line]
-            issues.extend(Issue(i,retained.key,'revision','CONFLICTING_REVISION') for i in disputed)
+    def reconcile(self, issues, admissible=None):
+        by_revision = {}
+        for position, record in self.entries:
+            by_revision.setdefault(record.revision, []).append((position, record))
+        disputed = any(len({record.signature() for _, record in group}) > 1
+                       for group in by_revision.values())
+        if disputed:
+            issues.extend(Issue(position, record.key, 'revision', 'CONFLICTING_REVISION')
+                          for position, record in self.entries)
             return None
-        issues.extend(Issue(i,retained.key,'revision','OLDER_REVISION') for i in self.obsolete)
-        issues.extend(Issue(i,retained.key,'revision','REPEATED_REVISION') for i in self.peers)
+        revisions = sorted(by_revision, reverse=True)
+        selected = revisions[0]
+        if admissible is not None:
+            # A late revision that cannot settle inside its window must not
+            # displace an earlier revision whose result was already valid
+            # before the window closed.
+            valid = [revision for revision in revisions
+                     if any(admissible(record) for _, record in by_revision[revision])]
+            if valid:
+                selected = valid[0]
+        retained_pool = sorted(by_revision[selected], key=lambda pair: (pair[1].received, pair[0]))
+        retained = retained_pool[0][1]
+        for position, _ in retained_pool[1:]:
+            issues.append(Issue(position, retained.key, 'revision', 'REPEATED_REVISION'))
+        for revision in revisions:
+            if revision == selected:
+                continue
+            code = 'OLDER_REVISION' if revision < selected else 'LATE_REVISION_EXCLUDED'
+            issues.extend(Issue(position, retained.key, 'revision', code)
+                          for position, _ in by_revision[revision])
         return retained
 
 
@@ -122,7 +123,7 @@ def read_assay(document):
     return DatecodeRecord(identifier,district,observed_day,intake_day,reset,closed_at,grade,observed,**readings)
 
 
-def load_samples(batch, as_of):
+def load_samples(batch, as_of, admissible=None):
     if type(as_of) is not int or not 0<=as_of<=3650:
         raise ValueError('台账访问日必须在 0–3650 内')
     revisions = {}
@@ -140,8 +141,10 @@ def load_samples(batch, as_of):
         elif item.key in revisions:
             revisions[item.key].post(position,item)
         else:
-            revisions[item.key] = RevisionJournal((position,item))
-    settled = [ticket for journal in revisions.values() if (ticket:=journal.reconcile(isolated)) is not None]
+            revisions[item.key] = RevisionJournal()
+            revisions[item.key].post(position,item)
+    settled = [ticket for journal in revisions.values()
+               if (ticket:=journal.reconcile(isolated,admissible)) is not None]
     settled.sort(key=lambda record:(record.day,record.key))
     isolated.sort(key=lambda incident:incident.source_row)
     return DecodeResult(tuple(settled),tuple(isolated),position)
